@@ -246,3 +246,19 @@ class CrsMatrix(object):
                 x[i, self.row[i, :nnz],
                   self.col[i, :nnz]] = data[i, :nnz]
             return x
+
+
+def compress_coo_row(row):
+    # look up row changing index
+    # TODO: require that row is sorted
+    xp = backend.get_array_module(row)
+    compressed_row = xp.array([], dtype=xp.int)
+    index = -1
+    for i, v in enumerate(row):
+        diff = v - index
+        if diff != 0:
+            compressed_row = xp.hstack((compressed_row,
+                                        xp.repeat(i+1, diff)))
+            index += diff
+    compressed_row = xp.hstack((compressed_row, len(row) + 1))
+    return compressed_row
