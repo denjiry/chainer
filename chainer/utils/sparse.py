@@ -204,42 +204,29 @@ class CrsMatrix(object):
         col (numpy.ndarray or cupy.ndarray): The column indices of the matrix
             entries.
         shape (tuple of int): The shape of the matrix in dense format.
-        order ('C', 'F', 'other' or None): If ``'C'``, the maxtix is assumed
-            that its row indices are sorted. If ``'F'``, the matrix is assumed
-            that its column indices are sorted. If ``'other'``, the matrix is
-            assumed as neither 'C' order nor 'F' order. If ``None`` (this is
-            the default), the matrix is automatically checked if it is 'C'
-            order, 'F' order or another. This information will be used by some
-            functions like :func:`~chainer.functions.sparse_matmul` as a hint
-            to improve performance.
         requires_grad (bool): If ``True``, gradient of this sparse matrix will
             be computed in back-propagation.
 
     .. seealso::
-        See :func:`~chainer.utils.to_coo` for how to construct a COO matrix
+        See :func:`~chainer.utils.to_crs` for how to construct a CRS matrix
         from an array.
 
     """
 
-    def __init__(self, data, row, col, shape, order=None,
+    def __init__(self, data, row, col, shape,
                  requires_grad=False):
-        if not (1 <= data.ndim <= 2):
-            raise ValueError('ndim of data must be 1 or 2.')
-        if not (data.ndim == row.ndim == col.ndim):
-            raise ValueError('ndim of data, row and col must be the same.')
+        if not (1 == data.ndim):
+            raise ValueError('ndim of data must be 1.')
+        if not (data.ndim == col.ndim):
+            raise ValueError('ndim of data and col must be the same.')
         if len(shape) != 2:
             raise ValueError('length of shape must be 2.')
         if not (shape[0] > 0 and shape[1] > 0):
             raise ValueError('numbers in shape must be greater than 0.')
-        if order not in ('C', 'F', 'other', None):
-            raise ValueError('order must be \'C\', \'F\', \'other\' or None.')
         self.data = chainer.Variable(data, requires_grad=requires_grad)
         self.row = row
         self.col = col
         self.shape = shape  # (row, col)
-        self.order = order
-        if order is None:
-            self.order = get_order(row, col)
 
     def to_dense(self):
         """Returns a dense matrix format of this sparse matrix."""
