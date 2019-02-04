@@ -108,12 +108,17 @@ class TestGetOrder2(unittest.TestCase):
             utils.get_order(row, col)
 
 
+@testing.parameterize(*testing.product({
+    'row_assumed': [(numpy.array([0, 0, 0, 1, 1, 2, 2, 3]),
+                     numpy.array([0, 4, 6, 8, 9])),
+                    (numpy.array([1, 1, 2, 2, 3]),
+                     numpy.array([0, 0, 3, 5, 6]))],
+}))
 class TestCompressCooRow(unittest.TestCase):
 
     def test_coo_row(self):
-        row = numpy.array([0, 0, 0, 1, 1, 2, 2, 3])
-        compressed_row = utils.compress_coo_row(row)
-        assumed = numpy.array([0, 4, 6, 8, 9])
+        compressed_row = utils.compress_coo_row(self.row_assumed[0])
+        assumed = self.row_assumed[1]
         assert numpy.array_equal(assumed, compressed_row), \
             compressed_row
 
