@@ -108,4 +108,14 @@ class TestGetOrder2(unittest.TestCase):
             utils.get_order(row, col)
 
 
+@testing.parameterize(*testing.product({
+    'shape': [(7,), (10,)],
+    'dtype': [numpy.int32],
+}))
+class TestCompressCooRow(unittest.TestCase):
+
+    def test_coo_row(self):
+        utils.compress_coo_row
+
+
 testing.run_module(__name__, __file__)
