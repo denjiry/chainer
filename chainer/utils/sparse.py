@@ -252,8 +252,8 @@ def compress_coo_row(row):
     # look up row changing index
     # TODO: require that row is sorted
     xp = backend.get_array_module(row)
-    compressed_row = xp.array([], dtype=xp.int)
-    index = -1
+    compressed_row = xp.array([0], dtype=xp.int)
+    index = 0
     for i, v in enumerate(row):
         diff = v - index
         if diff != 0:
