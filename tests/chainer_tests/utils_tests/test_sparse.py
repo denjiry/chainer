@@ -114,7 +114,7 @@ class TestGetOrder2(unittest.TestCase):
                          numpy.array([0, 3, 4, 6, 7])),
                         (numpy.array([1, 1, 2, 2, 3]),
                          4,
-                         numpy.array([0, 0, 3, 5, 6]))],
+                         numpy.array([0, 0, 2, 4, 5]))],
 }))
 class TestCompressCooRow(unittest.TestCase):
 
