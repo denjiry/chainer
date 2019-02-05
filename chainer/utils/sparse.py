@@ -248,17 +248,22 @@ class CrsMatrix(object):
             return x
 
 
-def compress_coo_row(row):
+def _seek_last(arr, dim):
+    for i, v in enumerate(arr):
+        if v > dim:
+            return i
+    # don't match
+    return len(arr)
+
+
+def compress_coo_row(row, n_rows):
     # look up row changing index
     # TODO: require that row is sorted
     xp = backend.get_array_module(row)
-    compressed_row = xp.array([0], dtype=xp.int)
+    compressed_row = xp.zeros((n_rows+1), dtype=xp.int)
     index = 0
-    for i, v in enumerate(row):
-        diff = v - index
-        if diff != 0:
-            compressed_row = xp.hstack((compressed_row,
-                                        xp.repeat(i+1, diff)))
-            index += diff
-    compressed_row = xp.hstack((compressed_row, len(row) + 1))
+    for dim in range(n_rows):
+        last = index + _seek_last(row[index:], dim)
+        compressed_row[dim+1] = last
+        index = last
     return compressed_row
