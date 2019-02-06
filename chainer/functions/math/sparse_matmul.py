@@ -476,14 +476,14 @@ def _crs_matmul_cpu(A_data, A_row, A_col, A_shape, B, dtype):
     _m, _k = A_shape
     _n = B.shape[-1]
     if B.ndim == 2:
-        sp_A = sparse.crs_matrix((A_data, (A_row, A_col)), shape=(_m, _k))
+        sp_A = sparse.csr_matrix((A_data, (A_row, A_col)), shape=(_m, _k))
         C = sp_A.dot(B).astype(dtype, copy=False)
     else:
         nb = B.shape[0]
         C = numpy.empty((nb, _m, _n), dtype=dtype)
         for i in range(nb):
             nnz = len(numpy.where(A_row[i] >= 0)[0])
-            sp_A = sparse.crs_matrix((A_data[i, :nnz],
+            sp_A = sparse.csr_matrix((A_data[i, :nnz],
                                       (A_row[i, :nnz], A_col[i, :nnz])),
                                      shape=(_m, _k))
             C[i] = sp_A.dot(B[i]).astype(dtype, copy=False)
