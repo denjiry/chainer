@@ -431,20 +431,28 @@ class CooMatMulGradSP(function_node.FunctionNode):
         return ret
 
 
-def _comp_matmul(sp_data, sp_row, sp_col, sp_shape,
+def _swap_format(format_):
+    if format_ == 'crs':
+        return 'csc'
+    elif format_ == 'csc':
+        return 'crs'
+    else:
+        raise ValueError('format_ must be either crs or csc')
+
+
+def _comp_matmul(sp_data, sp_indices, sp_indptr, sp_shape, sp_format_,
                  dn, transa, transb, transc, dtype=None):
     if dtype is None:
         dtype = numpy.result_type(sp_data.dtype, dn.dtype)
 
     A_data = sp_data
+    A_indices = sp_indices
+    A_indptr = sp_indptr
     if transa:
-        A_row = sp_col
-        A_col = sp_row
+        A_format_ = _swap_format(sp_format_)
         A_shape = (sp_shape[1], sp_shape[0])
-        # TODO(denjiry): write something instead of order
     else:
-        A_row = sp_row
-        A_col = sp_col
+        A_format_ = sp_format_
         A_shape = sp_shape
     if transb:
         B = dn.swapaxes(-1, -2)
@@ -453,9 +461,10 @@ def _comp_matmul(sp_data, sp_row, sp_col, sp_shape,
 
     xp = backend.get_array_module(A_data, B)
     if xp is numpy:
-        C = _comp_matmul_cpu(A_data, A_row, A_col, A_shape, B, dtype)
+        C = _comp_matmul_cpu(A_data, A_indices, A_indptr, A_shape, A_format_,
+                             B, dtype)
     else:
-        C = _comp_matmul_gpu(A_data, A_row, A_col, A_shape,
+        C = _comp_matmul_gpu(A_data, A_indices, A_indptr, A_shape, A_format_,
                              B, dtype)
 
     if transc:
@@ -463,10 +472,11 @@ def _comp_matmul(sp_data, sp_row, sp_col, sp_shape,
     return C
 
 
-def _comp_matmul_cpu(A_data, A_row, A_col, A_shape, B, dtype):
+def _comp_matmul_cpu(A_data, A_indices, A_indptr, A_shape, A_format_,
+                     B, dtype):
     # A_shape: (_m, _k)
     # B.shape: ((nb,) _k, _n)
-    # A_data/row/col.shape: ((nb,) ldnz)
+    # A_data/indices.shape: ((nb,) ldnz)
     if not _scipy_available:
         msg = "SciPy seems to be unavailable on your system. A CPU" \
               " implementation of sparse_matmul uses SciPy, so you" \
@@ -476,17 +486,23 @@ def _comp_matmul_cpu(A_data, A_row, A_col, A_shape, B, dtype):
     _m, _k = A_shape
     _n = B.shape[-1]
     if B.ndim == 2:
-        sp_A = sparse.csr_matrix((A_data, A_col, A_row), shape=(_m, _k))
+        if A_format_ == 'crs':
+            sp_A = sparse.csr_matrix((A_data, A_indices, A_indptr),
+                                     shape=(_m, _k))
+        elif A_format_ == 'csc':
+            sp_A = sparse.csc_matrix((A_data, A_indices, A_indptr),
+                                     shape=(_m, _k))
         C = sp_A.dot(B).astype(dtype, copy=False)
     else:
-        # TODO (denjiry): make this block following above csr_matrix
         nb = B.shape[0]
         C = numpy.empty((nb, _m, _n), dtype=dtype)
         for i in range(nb):
-            nnz = len(numpy.where(A_row[i] >= 0)[0])
-            sp_A = sparse.csr_matrix((A_data[i, :nnz],
-                                      (A_row[i, :nnz], A_col[i, :nnz])),
-                                     shape=(_m, _k))
+            if A_format_ == 'crs':
+                sp_A = sparse.csr_matrix((A_data, A_indices, A_indptr),
+                                         shape=(_m, _k))
+            elif A_format_ == 'csc':
+                sp_A = sparse.csc_matrix((A_data, A_indices, A_indptr),
+                                         shape=(_m, _k))
             C[i] = sp_A.dot(B[i]).astype(dtype, copy=False)
 
     return C
@@ -572,21 +588,19 @@ def _cupy_comp_matmul():
 
 class CompMatMul(function_node.FunctionNode):
 
-    def __init__(self, sp_row, sp_col, sp_shape,
+    def __init__(self, sp_indices, sp_indptr, sp_shape, sp_format_,
                  transa=False, transb=False, transc=False, dtype=None):
-        if sp_row.ndim != sp_col.ndim:
-            raise ValueError('ndim of sp_row and sp_col must be the same.')
-        if sp_row.ndim != 1 and sp_row.ndim != 2:
-            raise ValueError('ndim of sp_row and sp_col must be one or two.')
-        for i in range(sp_row.ndim):
-            if sp_row.shape[i] != sp_col.shape[i]:
-                msg = 'shape of sp_row and sp_col must be the same.'
-                raise ValueError(msg)
+        if sp_indices.ndim != sp_indptr.ndim:
+            raise ValueError('ndim of sp_indices and sp_indptr must '
+                             'be the same.')
+        if sp_indices.ndim != 1:
+            raise ValueError('ndim of sp_indices and sp_indptr must be one')
         if len(sp_shape) != 2:
             raise ValueError('len(sp_shape) must be two.')
-        self.sp_row = sp_row  # ((nb,) ldnz)
-        self.sp_col = sp_col  # ((nb,) ldnz)
+        self.sp_indices = sp_indices  # ((nb,) ldnz)
+        self.sp_indptr = sp_indptr  # ((nb,) ldnz)
         self.sp_shape = sp_shape  # (_m, _k) when transa is False
+        self.sp_format_ = sp_format_
         self.transa = transa
         self.transb = transb
         self.transc = transc
@@ -609,20 +623,21 @@ class CompMatMul(function_node.FunctionNode):
             dn_type.ndim >= 2,
             dn_type.ndim <= 3,
             sp_type.ndim == dn_type.ndim - 1,
-            sp_type.shape[-1] == self.sp_row.shape[-1],
+            sp_type.shape[-1] == self.sp_indices.shape[-1],
             self.sp_shape[sp_k_axis] == dn_type.shape[dn_k_axis],
         )
         dn_ndim = type_check.eval(dn_type.ndim)
         if dn_ndim == 3:
             type_check.expect(
-                sp_type.shape[0] == self.sp_row.shape[0],
-                dn_type.shape[0] == self.sp_row.shape[0],
+                sp_type.shape[0] == self.sp_indices.shape[0],
+                dn_type.shape[0] == self.sp_indices.shape[0],
             )
 
     def forward(self, inputs):
         self.retain_inputs((0, 1))
         sp, dn = inputs
-        c = _comp_matmul(sp, self.sp_row, self.sp_col, self.sp_shape, dn,
+        c = _comp_matmul(sp, self.sp_indices, self.sp_indptr, self.sp_shape,
+                         self.sp_format_, dn,
                          self.transa, self.transb, self.transc, self.dtype)
         return utils.force_array(c, self.dtype),
 
@@ -631,12 +646,12 @@ class CompMatMul(function_node.FunctionNode):
         g_c, = grad_outputs
         ret = []
         if 0 in indexes:
-            g_sp = CompMatMulGradSP(self.sp_row, self.sp_col, self.sp_shape,
+            g_sp = CompMatMulGradSP(self.sp_indices, self.sp_indptr, self.sp_shape,
                                     self.transc, not self.transb, self.transa,
                                     dtype=sp.dtype).apply((g_c, dn))[0]
             ret.append(g_sp)
         if 1 in indexes:
-            g_dn = CompMatMul(self.sp_row, self.sp_col, self.sp_shape,
+            g_dn = CompMatMul(self.sp_indices, self.sp_indptr, self.sp_shape,
                               not self.transa, self.transc, self.transb,
                               dtype=dn.dtype).apply((sp, g_c))[0]
             ret.append(g_dn)
@@ -756,21 +771,21 @@ def _cupy_comp_matmul_gradsp():
 
 class CompMatMulGradSP(function_node.FunctionNode):
 
-    def __init__(self, sp_row, sp_col, sp_shape,
+    def __init__(self, sp_indices, sp_indptr, sp_shape,
                  transa=False, transb=False, transc=False,
                  dtype=None):
-        if sp_row.ndim != sp_col.ndim:
-            raise ValueError('ndim of sp_row and sp_col must be the same.')
-        if sp_row.ndim != 1 and sp_row.ndim != 2:
-            raise ValueError('ndim of sp_row and sp_col must be one or two.')
-        for i in range(sp_row.ndim):
-            if sp_row.shape[i] != sp_col.shape[i]:
-                msg = 'shape of sp_row and sp_col must be the same.'
+        if sp_indices.ndim != sp_indptr.ndim:
+            raise ValueError('ndim of sp_indices and sp_indptr must be the same.')
+        if sp_indices.ndim != 1 and sp_indices.ndim != 2:
+            raise ValueError('ndim of sp_indices and sp_indptr must be one or two.')
+        for i in range(sp_indices.ndim):
+            if sp_indices.shape[i] != sp_indptr.shape[i]:
+                msg = 'shape of sp_indices and sp_indptr must be the same.'
                 raise ValueError(msg)
         if len(sp_shape) != 2:
             raise ValueError('len(sp_shape) must be two.')
-        self.sp_row = sp_row  # ((nb,) ldnz)
-        self.sp_col = sp_col  # ((nb,) ldnz)
+        self.sp_indices = sp_indices  # ((nb,) ldnz)
+        self.sp_indptr = sp_indptr  # ((nb,) ldnz)
         self.sp_shape = sp_shape  # (_m, _n) when transc is False
         self.transa = transa
         self.transb = transb
@@ -804,14 +819,14 @@ class CompMatMulGradSP(function_node.FunctionNode):
         a_ndim = type_check.eval(a_type.ndim)
         if a_ndim == 3:
             type_check.expect(
-                a_type.shape[0] == self.sp_row.shape[0],
-                b_type.shape[0] == self.sp_row.shape[0],
+                a_type.shape[0] == self.sp_indices.shape[0],
+                b_type.shape[0] == self.sp_indices.shape[0],
             )
 
     def forward(self, inputs):
         self.retain_inputs((0, 1))
         a, b = inputs
-        c = _comp_matmul_gradsp(a, b, self.sp_row, self.sp_col, self.sp_shape,
+        c = _comp_matmul_gradsp(a, b, self.sp_indices, self.sp_indptr, self.sp_shape,
                                 self.transa, self.transb, self.transc,
                                 self.dtype)
         return utils.force_array(c),
@@ -821,12 +836,12 @@ class CompMatMulGradSP(function_node.FunctionNode):
         g_sp, = grad_outputs
         ret = []
         if 0 in indexes:
-            g_a = CompMatMul(self.sp_row, self.sp_col, self.sp_shape,
+            g_a = CompMatMul(self.sp_indices, self.sp_indptr, self.sp_shape,
                              self.transc, not self.transb, self.transa,
                              dtype=a.dtype).apply((g_sp, b))[0]
             ret.append(g_a)
         if 1 in indexes:
-            g_b = CompMatMul(self.sp_row, self.sp_col, self.sp_shape,
+            g_b = CompMatMul(self.sp_indices, self.sp_indptr, self.sp_shape,
                              not self.transc, self.transa, not self.transb,
                              dtype=b.dtype).apply((g_sp, a))[0]
             ret.append(g_b)
@@ -877,13 +892,15 @@ def sparse_matmul(a, b, transa=False, transb=False):
                          transc=True).apply((b.data, a))[0]
     elif (isinstance(a, utils.CompressedMatrix) and
             isinstance(b, (chainer.Variable, numpy.ndarray, cuda.ndarray))):
-        return CompMatMul(a.row, a.col, a.shape,
+        return CompMatMul(a.indices, a.indptr, a.shape,
+                          a.format_,
                           transa=transa,
                           transb=transb,
                           transc=False).apply((a.data, b))[0]
     elif (isinstance(a, (chainer.Variable, numpy.ndarray, cuda.ndarray)) and
           isinstance(b, utils.CompressedMatrix)):
-        return CompMatMul(b.row, b.col, b.shape,
+        return CompMatMul(b.indices, b.indptr, b.shape,
+                          b.format_,
                           transa=not transb,
                           transb=not transa,
                           transc=True).apply((b.data, a))[0]
