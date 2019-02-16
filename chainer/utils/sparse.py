@@ -216,8 +216,8 @@ class CompressedMatrix(object):
 
     def __init__(self, data, indices, indptr, shape,
                  format_, requires_grad=False):
-        if not (1 == data.ndim):
-            raise ValueError('ndim of data must be 1.')
+        if not (1 == data.ndim <= 2):
+            raise ValueError('ndim of data must be 1 or 2.')
         if not (data.ndim == indices.ndim):
             raise ValueError('ndim of data and indices must be the same.')
         if not (len(data) == len(indices)):
@@ -228,6 +228,11 @@ class CompressedMatrix(object):
             raise ValueError('numbers in shape must be greater than 0.')
         if not (format_ in ('crs', 'csc')):
             raise ValueError('format_ must be either crs or csc ')
+        if format_ == 'crs' and (shape[-2]+1) != len(indptr):
+            raise ValueError('on crs, indptr is longer than row by one.')
+        elif format_ == 'csc' and (shape[-1]+1) != len(indptr):
+            raise ValueError('on csc, indptr is longer than col by one.')
+
         self.data = chainer.Variable(data, requires_grad=requires_grad)
         self.indices = indices
         self.indptr = indptr
@@ -265,7 +270,7 @@ def _sort_coo(coo, key_ind):
     return coo
 
 
-def coo_to_compressed(coo, format_):
+def _a_coo_to_compressed(coo, format_):
     if format_ == 'crs':
         sorted_coo = _sort_coo(coo, coo.row)
         indices = sorted_coo.col
@@ -277,5 +282,14 @@ def coo_to_compressed(coo, format_):
     else:
         raise ValueError('format_ must be either crs or csc.')
     data = sorted_coo.data.data
+    return data, indices, indptr
+
+
+def coo_to_compressed(coo, format_):
+    if len(coo.data.shape) == 1:
+        data, indices, indptr = _a_coo_to_compressed(coo, format_)
+    elif len(coo.data.shape) == 2:
+        nb = coo.data.shape[0]
+        # Implement this
     return CompressedMatrix(data, indices, indptr, coo.shape,
                             format_, requires_grad=coo.requires_grad)
