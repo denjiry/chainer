@@ -431,8 +431,8 @@ class CooMatMulGradSP(function_node.FunctionNode):
         return ret
 
 
-def _crs_matmul(sp_data, sp_row, sp_col, sp_shape,
-                dn, transa, transb, transc, dtype=None):
+def _comp_matmul(sp_data, sp_row, sp_col, sp_shape,
+                 dn, transa, transb, transc, dtype=None):
     if dtype is None:
         dtype = numpy.result_type(sp_data.dtype, dn.dtype)
 
@@ -453,17 +453,17 @@ def _crs_matmul(sp_data, sp_row, sp_col, sp_shape,
 
     xp = backend.get_array_module(A_data, B)
     if xp is numpy:
-        C = _crs_matmul_cpu(A_data, A_row, A_col, A_shape, B, dtype)
+        C = _comp_matmul_cpu(A_data, A_row, A_col, A_shape, B, dtype)
     else:
-        C = _crs_matmul_gpu(A_data, A_row, A_col, A_shape,
-                            B, dtype)
+        C = _comp_matmul_gpu(A_data, A_row, A_col, A_shape,
+                             B, dtype)
 
     if transc:
         C = C.swapaxes(-1, -2)
     return C
 
 
-def _crs_matmul_cpu(A_data, A_row, A_col, A_shape, B, dtype):
+def _comp_matmul_cpu(A_data, A_row, A_col, A_shape, B, dtype):
     # A_shape: (_m, _k)
     # B.shape: ((nb,) _k, _n)
     # A_data/row/col.shape: ((nb,) ldnz)
@@ -492,7 +492,7 @@ def _crs_matmul_cpu(A_data, A_row, A_col, A_shape, B, dtype):
     return C
 
 
-def _crs_matmul_gpu(A_data, A_row, A_col, A_shape, B, dtype):
+def _comp_matmul_gpu(A_data, A_row, A_col, A_shape, B, dtype):
     cupy_dtype = dtype
     if cupy_dtype == numpy.float16:
         cupy_dtype = numpy.float32
@@ -517,14 +517,14 @@ def _crs_matmul_gpu(A_data, A_row, A_col, A_shape, B, dtype):
     # thread, number of atomic-add operations can be reduced.
     chunk = max(ldnz // _m, 1)
     nthreads = (nb * ldnz + chunk - 1) // chunk * _n
-    _cupy_crs_matmul()(nb, _m, _n, _k, ldnz, chunk,
-                       A_data, A_row, A_col, B, C,
-                       size=nthreads)
+    _cupy_comp_matmul()(nb, _m, _n, _k, ldnz, chunk,
+                        A_data, A_row, A_col, B, C,
+                        size=nthreads)
 
     return C.astype(dtype, copy=False)
 
 
-def _cupy_crs_matmul():
+def _cupy_comp_matmul():
     return cuda.elementwise(
         'int32 nb, int32 _m, int32 _n, int32 _k, int32 nnz, int32 chunk, \
          raw A A_data, raw T A_row, raw T A_col, \
@@ -567,10 +567,10 @@ def _cupy_crs_matmul():
             atomicAdd(&_C[i_C], val_C);
         }
         ''',
-        'crs_matmul')
+        'comp_matmul')
 
 
-class CrsMatMul(function_node.FunctionNode):
+class CompMatMul(function_node.FunctionNode):
 
     def __init__(self, sp_row, sp_col, sp_shape,
                  transa=False, transb=False, transc=False, dtype=None):
@@ -622,9 +622,8 @@ class CrsMatMul(function_node.FunctionNode):
     def forward(self, inputs):
         self.retain_inputs((0, 1))
         sp, dn = inputs
-        c = _crs_matmul(sp, self.sp_row, self.sp_col, self.sp_shape,
-                        dn,
-                        self.transa, self.transb, self.transc, self.dtype)
+        c = _comp_matmul(sp, self.sp_row, self.sp_col, self.sp_shape, dn,
+                         self.transa, self.transb, self.transc, self.dtype)
         return utils.force_array(c, self.dtype),
 
     def backward(self, indexes, grad_outputs):
@@ -632,20 +631,20 @@ class CrsMatMul(function_node.FunctionNode):
         g_c, = grad_outputs
         ret = []
         if 0 in indexes:
-            g_sp = CrsMatMulGradSP(self.sp_row, self.sp_col, self.sp_shape,
-                                   self.transc, not self.transb, self.transa,
-                                   dtype=sp.dtype).apply((g_c, dn))[0]
+            g_sp = CompMatMulGradSP(self.sp_row, self.sp_col, self.sp_shape,
+                                    self.transc, not self.transb, self.transa,
+                                    dtype=sp.dtype).apply((g_c, dn))[0]
             ret.append(g_sp)
         if 1 in indexes:
-            g_dn = CrsMatMul(self.sp_row, self.sp_col, self.sp_shape,
-                             not self.transa, self.transc, self.transb,
-                             dtype=dn.dtype).apply((sp, g_c))[0]
+            g_dn = CompMatMul(self.sp_row, self.sp_col, self.sp_shape,
+                              not self.transa, self.transc, self.transb,
+                              dtype=dn.dtype).apply((sp, g_c))[0]
             ret.append(g_dn)
         return ret
 
 
-def _crs_matmul_gradsp(a, b, c_row, c_col, c_shape, transa, transb, transc,
-                       dtype):
+def _comp_matmul_gradsp(a, b, c_row, c_col, c_shape, transa, transb, transc,
+                        dtype):
     if dtype is None:
         dtype = numpy.result_type(a.dtype, b.dtype)
 
@@ -666,12 +665,12 @@ def _crs_matmul_gradsp(a, b, c_row, c_col, c_shape, transa, transb, transc,
 
     xp = backend.get_array_module(A, B)
     if xp is numpy:
-        return _crs_matmul_gradsp_cpu(A, B, C_row, C_col, dtype)
+        return _comp_matmul_gradsp_cpu(A, B, C_row, C_col, dtype)
     else:
-        return _crs_matmul_gradsp_gpu(A, B, C_row, C_col, dtype)
+        return _comp_matmul_gradsp_gpu(A, B, C_row, C_col, dtype)
 
 
-def _crs_matmul_gradsp_cpu(A, B, C_row, C_col, dtype):
+def _comp_matmul_gradsp_cpu(A, B, C_row, C_col, dtype):
     # A.shape: ((nb,) _m, _k)
     # B.shape: ((nb,) _k, _n)
     # C_row/col.shape: ((nb,) ldnz)
@@ -698,7 +697,7 @@ def _crs_matmul_gradsp_cpu(A, B, C_row, C_col, dtype):
     return C_data
 
 
-def _crs_matmul_gradsp_gpu(A, B, C_row, C_col, dtype):
+def _comp_matmul_gradsp_gpu(A, B, C_row, C_col, dtype):
     # A.shape: ((nb,) _m, _k)
     # B.shape: ((nb,) _k, _n)
     # C_row/col.shape: ((nb,) ldnz)
@@ -713,13 +712,13 @@ def _crs_matmul_gradsp_gpu(A, B, C_row, C_col, dtype):
         C_data = cuda.cupy.zeros((nb, ldnz), dtype=dtype)
 
     nthreads = nb * ldnz
-    _cupy_crs_matmul_gradsp()(nb, _m, _n, _k, ldnz, A, B, C_row, C_col, C_data,
-                              size=nthreads)
+    _cupy_comp_matmul_gradsp()(nb, _m, _n, _k, ldnz, A, B, C_row, C_col,
+                               C_data, size=nthreads)
 
     return C_data
 
 
-def _cupy_crs_matmul_gradsp():
+def _cupy_comp_matmul_gradsp():
     return cuda.elementwise(
         'int32 nb, int32 _m, int32 _n, int32 _k, int32 nnz, \
          raw A _A, raw B _B, \
@@ -752,10 +751,10 @@ def _cupy_crs_matmul_gradsp():
         }
         C_data[i_C] = val_C;
         ''',
-        'crs_matmul_gradsp')
+        'comp_matmul_gradsp')
 
 
-class CrsMatMulGradSP(function_node.FunctionNode):
+class CompMatMulGradSP(function_node.FunctionNode):
 
     def __init__(self, sp_row, sp_col, sp_shape,
                  transa=False, transb=False, transc=False,
@@ -812,9 +811,9 @@ class CrsMatMulGradSP(function_node.FunctionNode):
     def forward(self, inputs):
         self.retain_inputs((0, 1))
         a, b = inputs
-        c = _crs_matmul_gradsp(a, b, self.sp_row, self.sp_col, self.sp_shape,
-                               self.transa, self.transb, self.transc,
-                               self.dtype)
+        c = _comp_matmul_gradsp(a, b, self.sp_row, self.sp_col, self.sp_shape,
+                                self.transa, self.transb, self.transc,
+                                self.dtype)
         return utils.force_array(c),
 
     def backward(self, indexes, grad_outputs):
@@ -822,14 +821,14 @@ class CrsMatMulGradSP(function_node.FunctionNode):
         g_sp, = grad_outputs
         ret = []
         if 0 in indexes:
-            g_a = CrsMatMul(self.sp_row, self.sp_col, self.sp_shape,
-                            self.transc, not self.transb, self.transa,
-                            dtype=a.dtype).apply((g_sp, b))[0]
+            g_a = CompMatMul(self.sp_row, self.sp_col, self.sp_shape,
+                             self.transc, not self.transb, self.transa,
+                             dtype=a.dtype).apply((g_sp, b))[0]
             ret.append(g_a)
         if 1 in indexes:
-            g_b = CrsMatMul(self.sp_row, self.sp_col, self.sp_shape,
-                            not self.transc, self.transa, not self.transb,
-                            dtype=b.dtype).apply((g_sp, a))[0]
+            g_b = CompMatMul(self.sp_row, self.sp_col, self.sp_shape,
+                             not self.transc, self.transa, not self.transb,
+                             dtype=b.dtype).apply((g_sp, a))[0]
             ret.append(g_b)
         return ret
 
@@ -844,9 +843,11 @@ def sparse_matmul(a, b, transa=False, transb=False):
 
     Args:
         a (~chainer.Variable or ~chainer.utils.CooMatrix or
-        ~chainer.utils.CrsMatrix): The left operand of matrix multiplication.
+        ~chainer.utils.CompressedMatrix):
+        The left operand of matrix multiplication.
         b (~chainer.Variable or ~chainer.utils.CooMatrix or
-        ~chainer.utils.CrsMatrix): The right operand of matrix multiplication.
+        ~chainer.utils.CompressedMatrix):
+        The right operand of matrix multiplication.
         transa (bool): If ``True``, each matrix in ``a`` will be transposed.
         transb (bool): If ``True``, each matrix in ``b`` will be transposed.
 
@@ -854,13 +855,12 @@ def sparse_matmul(a, b, transa=False, transb=False):
         ~chainer.Variable: Result of batched mat-mul.
 
     .. seealso::
-        See :func:`~chainer.utils.to_coo` for how to construct a COO matrix
-        from an array.
+        See :func:`~chainer.utils.coo_to_compressed` for how to construct
+        a compressed matrix(e.g. CRS or CSC matrix) from an array.
 
     .. note::
-        Performance of this function on GPU can be improved by using the
-        ``order`` argument of :class:`~chainer.utils.CooMatrix` when the sparse
-        matrix is created.
+        Performance of this function on GPU can be improved by
+        switching format(csc or crs) for computer architecture.
 
     """
     if (isinstance(a, utils.CooMatrix) and
@@ -875,18 +875,18 @@ def sparse_matmul(a, b, transa=False, transb=False):
                          transa=not transb,
                          transb=not transa,
                          transc=True).apply((b.data, a))[0]
-    elif (isinstance(a, utils.CrsMatrix) and
+    elif (isinstance(a, utils.CompressedMatrix) and
             isinstance(b, (chainer.Variable, numpy.ndarray, cuda.ndarray))):
-        return CrsMatMul(a.row, a.col, a.shape,
-                         transa=transa,
-                         transb=transb,
-                         transc=False).apply((a.data, b))[0]
+        return CompMatMul(a.row, a.col, a.shape,
+                          transa=transa,
+                          transb=transb,
+                          transc=False).apply((a.data, b))[0]
     elif (isinstance(a, (chainer.Variable, numpy.ndarray, cuda.ndarray)) and
-          isinstance(b, utils.CrsMatrix)):
-        return CrsMatMul(b.row, b.col, b.shape,
-                         transa=not transb,
-                         transb=not transa,
-                         transc=True).apply((b.data, a))[0]
+          isinstance(b, utils.CompressedMatrix)):
+        return CompMatMul(b.row, b.col, b.shape,
+                          transa=not transb,
+                          transb=not transa,
+                          transc=True).apply((b.data, a))[0]
     else:
         msg = 'This combination of type of inputs is not supported.\n'
         msg += '    a: {}\n'.format(type(a))
