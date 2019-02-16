@@ -623,7 +623,6 @@ class CompMatMul(function_node.FunctionNode):
             dn_type.ndim >= 2,
             dn_type.ndim <= 3,
             sp_type.ndim == dn_type.ndim - 1,
-            sp_type.shape[-1] == self.sp_indices.shape[-1],
             self.sp_shape[sp_k_axis] == dn_type.shape[dn_k_axis],
         )
         dn_ndim = type_check.eval(dn_type.ndim)
