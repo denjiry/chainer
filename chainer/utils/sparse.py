@@ -299,14 +299,38 @@ def _seek_last(arr, dim):
     return len(arr)
 
 
-def compress_coo_row(row, n_rows):
+def _compress(ind, n_ind):
     # look up row changing index
     # TODO: require that row is sorted
-    xp = backend.get_array_module(row)
-    compressed_row = xp.zeros((n_rows+1), dtype=xp.int)
+    xp = backend.get_array_module(ind)
+    indptr = xp.zeros((n_ind+1), dtype=xp.int)
     index = 0
-    for dim in range(n_rows):
-        last = index + _seek_last(row[index:], dim)
-        compressed_row[dim+1] = last
+    for dim in range(n_ind):
+        last = index + _seek_last(ind[index:], dim)
+        indptr[dim+1] = last
         index = last
-    return compressed_row
+    return indptr
+
+
+def _sort_coo(coo, key_ind):
+    xp = backend.get_array_module(coo)
+    sort_ind = xp.argsort(key_ind)
+    coo.data.data = coo.data.data[sort_ind]
+    coo.row = coo.row[sort_ind]
+    coo.col = coo.col[sort_ind]
+    return coo
+
+
+def coo_to_compressed(coo, format_):
+    if format_ == 'crs':
+        sorted_coo = _sort_coo(coo, coo.row)
+        indices = sorted_coo.col
+        indptr = _compress(sorted_coo.row, coo.shape[0]+1)
+    elif format_ == 'csc':
+        sorted_coo = _sort_coo(coo, coo.col)
+        indices = sorted_coo.row
+        indptr = _compress(sorted_coo.col, coo.shape[1]+1)
+    else:
+        raise ValueError('format_ must be either crs or csc ')
+    return CompressedMatrix(sorted_coo.data, indices, indptr, coo.shape,
+                            format_, requires_grad=coo.requires_grad)
