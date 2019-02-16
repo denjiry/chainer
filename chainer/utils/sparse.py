@@ -192,6 +192,49 @@ def _is_c_order(row, col):
     return xp.amin(col_diff) >= 0
 
 
+class CompressedMatrix(object):
+
+    """A sparse matrix in compressed format(CSC or CRS).
+
+    Args:
+        data (numpy.ndarray or cupy.ndarray): The entries of the matrix.
+            The entries are usually non-zero-elements in the matrix.
+        indices (numpy.ndarray or cupy.ndarray): The indices of the matrix
+            entries.
+        indptr (numpy.ndarray or cupy.ndarray): The compressed indices of
+        the matrix entries.
+        shape (tuple of int): The shape of the matrix in dense format.
+        format_ (str): matrix format type which is either crs or csc.
+        requires_grad (bool): If ``True``, gradient of this sparse matrix will
+            be computed in back-propagation.
+
+    .. seealso::
+        See :func:`~chainer.utils.to_crs` for how to construct a CRS matrix
+        from an array.
+
+    """
+
+    def __init__(self, data, indices, indptr, shape,
+                 format_, requires_grad=False):
+        if not (1 == data.ndim):
+            raise ValueError('ndim of data must be 1.')
+        if not (data.ndim == indices.ndim):
+            raise ValueError('ndim of data and indices must be the same.')
+        if not (len(data) == len(indices)):
+            raise ValueError('length of data and indices must be the same.')
+        if len(shape) != 2:
+            raise ValueError('length of shape must be 2.')
+        if not (shape[0] > 0 and shape[1] > 0):
+            raise ValueError('numbers in shape must be greater than 0.')
+        if not (format_ in ('crs', 'csc')):
+            raise ValueError('format_ must be either crs or csc ')
+        self.data = chainer.Variable(data, requires_grad=requires_grad)
+        self.indices = indices
+        self.indptr = indptr
+        self.shape = shape
+        self.format_ = format_
+
+
 class CrsMatrix(object):
 
     """A sparse matrix in CRS format.
