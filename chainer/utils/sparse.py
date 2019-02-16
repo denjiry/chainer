@@ -204,7 +204,7 @@ class CompressedMatrix(object):
         indptr (numpy.ndarray or cupy.ndarray): The compressed indices of
         the matrix entries.
         shape (tuple of int): The shape of the matrix in dense format.
-        format_ (str): matrix format type which is either crs or csc.
+        format_ (str): matrix format type which is either 'crs' or 'csc'.
         requires_grad (bool): If ``True``, gradient of this sparse matrix will
             be computed in back-propagation.
 
@@ -233,62 +233,6 @@ class CompressedMatrix(object):
         self.indptr = indptr
         self.shape = shape
         self.format_ = format_
-
-
-class CrsMatrix(object):
-
-    """A sparse matrix in CRS format.
-
-    Args:
-        data (numpy.ndarray or cupy.ndarray): The entries of the matrix.
-            The entries are usually non-zero-elements in the matrix.
-        row (numpy.ndarray or cupy.ndarray): The row indices of the matrix
-            entries.
-        col (numpy.ndarray or cupy.ndarray): The column indices of the matrix
-            entries.
-        shape (tuple of int): The shape of the matrix in dense format.
-        requires_grad (bool): If ``True``, gradient of this sparse matrix will
-            be computed in back-propagation.
-
-    .. seealso::
-        See :func:`~chainer.utils.to_crs` for how to construct a CRS matrix
-        from an array.
-
-    """
-
-    def __init__(self, data, row, col, shape,
-                 requires_grad=False):
-        if not (1 == data.ndim):
-            raise ValueError('ndim of data must be 1.')
-        if not (data.ndim == col.ndim):
-            raise ValueError('ndim of data and col must be the same.')
-        if len(shape) != 2:
-            raise ValueError('length of shape must be 2.')
-        if not (shape[0] > 0 and shape[1] > 0):
-            raise ValueError('numbers in shape must be greater than 0.')
-        self.data = chainer.Variable(data, requires_grad=requires_grad)
-        self.row = row
-        self.col = col
-        self.shape = shape  # (row, col)
-
-    def to_dense(self):
-        """Returns a dense matrix format of this sparse matrix."""
-        data = self.data.data
-        xp = backend.get_array_module(data)
-        if data.ndim == 1:
-            x = xp.zeros(self.shape, dtype=data.dtype)
-            nnz = xp.count_nonzero(data)
-            x[self.row[:nnz], self.col[:nnz]] = data[:nnz]
-            return x
-        if data.ndim == 2:
-            nb = data.shape[0]
-            x = xp.zeros((nb, self.shape[0], self.shape[1]),
-                         dtype=data.dtype)
-            for i in range(nb):
-                nnz = xp.count_nonzero(data[i])
-                x[i, self.row[i, :nnz],
-                  self.col[i, :nnz]] = data[i, :nnz]
-            return x
 
 
 def _seek_last(arr, dim):
