@@ -275,6 +275,6 @@ def coo_to_compressed(coo, format_):
         indices = sorted_coo.row
         indptr = _compress(sorted_coo.col, coo.shape[1]+1)
     else:
-        raise ValueError('format_ must be either crs or csc ')
+        raise ValueError('format_ must be either crs or csc.')
     return CompressedMatrix(sorted_coo.data, indices, indptr, coo.shape,
                             format_, requires_grad=coo.requires_grad)
