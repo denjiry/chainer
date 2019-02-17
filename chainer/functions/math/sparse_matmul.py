@@ -508,7 +508,8 @@ def _comp_matmul_cpu(A_data, A_indices, A_indptr, A_shape, A_format_,
     return C
 
 
-def _comp_matmul_gpu(A_data, A_row, A_col, A_shape, B, dtype):
+def _comp_matmul_gpu(A_data, A_indices, A_indptr, A_shape, A_format_,
+                     B, dtype):
     cupy_dtype = dtype
     if cupy_dtype == numpy.float16:
         cupy_dtype = numpy.float32
@@ -534,7 +535,7 @@ def _comp_matmul_gpu(A_data, A_row, A_col, A_shape, B, dtype):
     chunk = max(ldnz // _m, 1)
     nthreads = (nb * ldnz + chunk - 1) // chunk * _n
     _cupy_comp_matmul()(nb, _m, _n, _k, ldnz, chunk,
-                        A_data, A_row, A_col, B, C,
+                        A_data, A_indices, A_indptr, B, C,
                         size=nthreads)
 
     return C.astype(dtype, copy=False)
@@ -543,7 +544,7 @@ def _comp_matmul_gpu(A_data, A_row, A_col, A_shape, B, dtype):
 def _cupy_comp_matmul():
     return cuda.elementwise(
         'int32 nb, int32 _m, int32 _n, int32 _k, int32 nnz, int32 chunk, \
-         raw A A_data, raw T A_row, raw T A_col, \
+         raw A A_data, raw T A_indices, raw T A_indptr, \
          raw B _B',
         'raw C _C',
         '''
@@ -645,7 +646,8 @@ class CompMatMul(function_node.FunctionNode):
         g_c, = grad_outputs
         ret = []
         if 0 in indexes:
-            g_sp = CompMatMulGradSP(self.sp_indices, self.sp_indptr, self.sp_shape,
+            g_sp = CompMatMulGradSP(self.sp_indices, self.sp_indptr,
+                                    self.sp_shape, self.sp_format_,
                                     self.transc, not self.transb, self.transa,
                                     dtype=sp.dtype).apply((g_c, dn))[0]
             ret.append(g_sp)
@@ -660,7 +662,8 @@ class CompMatMul(function_node.FunctionNode):
         return ret
 
 
-def _comp_matmul_gradsp(a, b, c_row, c_col, c_shape, transa, transb, transc,
+def _comp_matmul_gradsp(a, b, c_indices, c_indptr, c_shape, c_format_,
+                        transa, transb, transc,
                         dtype):
     if dtype is None:
         dtype = numpy.result_type(a.dtype, b.dtype)
@@ -673,66 +676,57 @@ def _comp_matmul_gradsp(a, b, c_row, c_col, c_shape, transa, transb, transc,
         B = b.swapaxes(-1, -2)
     else:
         B = b
+
+    C_indices = c_indices
+    C_indptr = c_indptr
     if transc:
-        C_row = c_col
-        C_col = c_row
+        C_format_ = _swap_format(c_format_)
     else:
-        C_row = c_row
-        C_col = c_col
+        C_format_ = c_format_
 
     xp = backend.get_array_module(A, B)
     if xp is numpy:
-        return _comp_matmul_gradsp_cpu(A, B, C_row, C_col, dtype)
+        return _comp_matmul_gradsp_cpu(A, B, C_indices, C_indptr, C_format_,
+                                       dtype)
     else:
-        return _comp_matmul_gradsp_gpu(A, B, C_row, C_col, dtype)
+        return _comp_matmul_gradsp_gpu(A, B, C_indices, C_indptr, C_format_,
+                                       dtype)
 
 
-def _comp_matmul_gradsp_cpu(A, B, C_row, C_col, dtype):
-    # A.shape: ((nb,) _m, _k)
-    # B.shape: ((nb,) _k, _n)
-    # C_row/col.shape: ((nb,) ldnz)
-    _m, _k = A.shape[-2:]
-    ldnz = C_row.shape[-1]
-    if hasattr(numpy, 'matmul'):
-        C = numpy.matmul(A, B)
-    elif A.ndim == 2:
-        C = numpy.dot(A, B)
-    else:
-        C = numpy.einsum('...ij,...jk->...ik', A, B)
-    C = C.astype(dtype, copy=False)
-    if A.ndim == 2:
-        C_data = numpy.zeros((ldnz), dtype=dtype)
-        nnz = len(numpy.where(C_row >= 0)[0])
-        C_data[:nnz] = C[C_row[:nnz], C_col[:nnz]]
-    else:
-        nb = A.shape[0]
-        C_data = numpy.zeros((nb, ldnz), dtype=dtype)
-        for i in range(nb):
-            nnz = len(numpy.where(C_row[i] >= 0)[0])
-            C_data[i, :nnz] = C[i, C_row[i, :nnz], C_col[i, :nnz]]
-
-    return C_data
+def _comp_matmul_gradsp_cpu(A, B, C_indices, C_indptr, C_format_, dtype):
+    # A.shape: (_m, _k)
+    # B.shape: (_k, _n)
+    # C_row/col.shape: (ldnz)
+    raise NotImplementedError
+    # _m, _k = A.shape[-2:]
+    # ldnz = C_row.shape[-1]
+    # if hasattr(numpy, 'matmul'):
+    #     C = numpy.matmul(A, B)
+    # else:
+    #     C = numpy.dot(A, B)
+    # C = C.astype(dtype, copy=False)
+    # C_data = numpy.zeros((ldnz), dtype=dtype)
+    # nnz = len(numpy.where(C_row >= 0)[0])
+    # C_data[:nnz] = C[C_row[:nnz], C_col[:nnz]]
+    # return C_data
 
 
-def _comp_matmul_gradsp_gpu(A, B, C_row, C_col, dtype):
-    # A.shape: ((nb,) _m, _k)
-    # B.shape: ((nb,) _k, _n)
-    # C_row/col.shape: ((nb,) ldnz)
-    _m, _k = A.shape[-2:]
-    _n = B.shape[-1]
-    ldnz = C_row.shape[-1]
-    if A.ndim == 2:
-        nb = 1
-        C_data = cuda.cupy.zeros((ldnz), dtype=dtype)
-    else:
-        nb = A.shape[0]
-        C_data = cuda.cupy.zeros((nb, ldnz), dtype=dtype)
+def _comp_matmul_gradsp_gpu(A, B, C_indices, C_indptr, C_format_, dtype):
+    # A.shape: (_m, _k)
+    # B.shape: (_k, _n)
+    # C_row/col.shape: (ldnz)
+    raise NotImplementedError
+    # _m, _k = A.shape[-2:]
+    # _n = B.shape[-1]
+    # ldnz = C_row.shape[-1]
+    # nb = 1
+    # C_data = cuda.cupy.zeros((ldnz), dtype=dtype)
 
-    nthreads = nb * ldnz
-    _cupy_comp_matmul_gradsp()(nb, _m, _n, _k, ldnz, A, B, C_row, C_col,
-                               C_data, size=nthreads)
+    # nthreads = nb * ldnz
+    # _cupy_comp_matmul_gradsp()(nb, _m, _n, _k, ldnz, A, B, C_row, C_col,
+    #                            C_data, size=nthreads)
 
-    return C_data
+    # return C_data
 
 
 def _cupy_comp_matmul_gradsp():
@@ -773,22 +767,25 @@ def _cupy_comp_matmul_gradsp():
 
 class CompMatMulGradSP(function_node.FunctionNode):
 
-    def __init__(self, sp_indices, sp_indptr, sp_shape,
+    def __init__(self, sp_indices, sp_indptr, sp_shape, sp_format_,
                  transa=False, transb=False, transc=False,
                  dtype=None):
         if sp_indices.ndim != sp_indptr.ndim:
-            raise ValueError('ndim of sp_indices and sp_indptr must be the same.')
+            raise ValueError('ndim of sp_indices and sp_indptr must be'
+                             'the same.')
         if sp_indices.ndim != 1 and sp_indices.ndim != 2:
-            raise ValueError('ndim of sp_indices and sp_indptr must be one or two.')
+            raise ValueError('ndim of sp_indices and sp_indptr must be'
+                             'one or two.')
         for i in range(sp_indices.ndim):
             if sp_indices.shape[i] != sp_indptr.shape[i]:
                 msg = 'shape of sp_indices and sp_indptr must be the same.'
                 raise ValueError(msg)
         if len(sp_shape) != 2:
             raise ValueError('len(sp_shape) must be two.')
-        self.sp_indices = sp_indices  # ((nb,) ldnz)
-        self.sp_indptr = sp_indptr  # ((nb,) ldnz)
+        self.sp_indices = sp_indices  # (ldnz)
+        self.sp_indptr = sp_indptr  # (ldnz)
         self.sp_shape = sp_shape  # (_m, _n) when transc is False
+        self.sp_format_ = sp_format_
         self.transa = transa
         self.transb = transb
         self.transc = transc
@@ -828,7 +825,8 @@ class CompMatMulGradSP(function_node.FunctionNode):
     def forward(self, inputs):
         self.retain_inputs((0, 1))
         a, b = inputs
-        c = _comp_matmul_gradsp(a, b, self.sp_indices, self.sp_indptr, self.sp_shape,
+        c = _comp_matmul_gradsp(a, b, self.sp_indices, self.sp_indptr,
+                                self.sp_shape, self.sp_format_,
                                 self.transa, self.transb, self.transc,
                                 self.dtype)
         return utils.force_array(c),
@@ -839,11 +837,13 @@ class CompMatMulGradSP(function_node.FunctionNode):
         ret = []
         if 0 in indexes:
             g_a = CompMatMul(self.sp_indices, self.sp_indptr, self.sp_shape,
+                             self.sp_format_,
                              self.transc, not self.transb, self.transa,
                              dtype=a.dtype).apply((g_sp, b))[0]
             ret.append(g_a)
         if 1 in indexes:
             g_b = CompMatMul(self.sp_indices, self.sp_indptr, self.sp_shape,
+                             self.sp_format_,
                              not self.transc, self.transa, not self.transb,
                              dtype=b.dtype).apply((g_sp, a))[0]
             ret.append(g_b)
