@@ -475,8 +475,8 @@ def _comp_matmul(sp_data, sp_indices, sp_indptr, sp_shape, sp_format_,
 def _comp_matmul_cpu(A_data, A_indices, A_indptr, A_shape, A_format_,
                      B, dtype):
     # A_shape: (_m, _k)
-    # B.shape: ((nb,) _k, _n)
-    # A_data/indices.shape: ((nb,) ldnz)
+    # B.shape: (_k, _n)
+    # A_data/indices.shape: (ldnz)
     if not _scipy_available:
         msg = "SciPy seems to be unavailable on your system. A CPU" \
               " implementation of sparse_matmul uses SciPy, so you" \
@@ -484,27 +484,14 @@ def _comp_matmul_cpu(A_data, A_indices, A_indptr, A_shape, A_format_,
         raise RuntimeError(msg)
 
     _m, _k = A_shape
-    _n = B.shape[-1]
-    if B.ndim == 2:
-        if A_format_ == 'crs':
-            sp_A = sparse.csr_matrix((A_data, A_indices, A_indptr),
-                                     shape=(_m, _k))
-        elif A_format_ == 'csc':
-            sp_A = sparse.csc_matrix((A_data, A_indices, A_indptr),
-                                     shape=(_m, _k))
-        C = sp_A.dot(B).astype(dtype, copy=False)
-    else:
-        nb = B.shape[0]
-        C = numpy.empty((nb, _m, _n), dtype=dtype)
-        for i in range(nb):
-            if A_format_ == 'crs':
-                sp_A = sparse.csr_matrix((A_data, A_indices, A_indptr),
-                                         shape=(_m, _k))
-            elif A_format_ == 'csc':
-                sp_A = sparse.csc_matrix((A_data, A_indices, A_indptr),
-                                         shape=(_m, _k))
-            C[i] = sp_A.dot(B[i]).astype(dtype, copy=False)
 
+    if A_format_ == 'crs':
+        sp_A = sparse.csr_matrix((A_data, A_indices, A_indptr),
+                                 shape=(_m, _k))
+    elif A_format_ == 'csc':
+        sp_A = sparse.csc_matrix((A_data, A_indices, A_indptr),
+                                 shape=(_m, _k))
+    C = sp_A.dot(B).astype(dtype, copy=False)
     return C
 
 
@@ -516,17 +503,13 @@ def _comp_matmul_gpu(A_data, A_indices, A_indptr, A_shape, A_format_,
         # fp32 is used in cupy kernel because fp16 atomicAdd is not supported
 
     # A_shape: (_m, _k)
-    # B.shape: ((nb,) _k, _n)
-    # A_data/row/col.shape: ((nb,) ldnz)
+    # B.shape: (_k, _n)
+    # A_data/row/col.shape: (ldnz,)
     _m, _k = A_shape
     _n = B.shape[-1]
     ldnz = A_data.shape[-1]
-    if B.ndim == 2:
-        nb = 1
-        C = cuda.cupy.zeros((_m, _n), dtype=cupy_dtype)
-    else:
-        nb = B.shape[0]
-        C = cuda.cupy.zeros((nb, _m, _n), dtype=cupy_dtype)
+    nb = 1
+    C = cuda.cupy.zeros((_m, _n), dtype=cupy_dtype)
 
     # A chunk is the number of non-zero elements handled by a single GPU
     # thread. If contiguous non-zero elemets are related to the same
@@ -598,8 +581,8 @@ class CompMatMul(function_node.FunctionNode):
             raise ValueError('ndim of sp_indices and sp_indptr must be one')
         if len(sp_shape) != 2:
             raise ValueError('len(sp_shape) must be two.')
-        self.sp_indices = sp_indices  # ((nb,) ldnz)
-        self.sp_indptr = sp_indptr  # ((nb,) ldnz)
+        self.sp_indices = sp_indices  # (ldnz)
+        self.sp_indptr = sp_indptr  # (ldnz)
         self.sp_shape = sp_shape  # (_m, _k) when transa is False
         self.sp_format_ = sp_format_
         self.transa = transa
@@ -621,17 +604,10 @@ class CompMatMul(function_node.FunctionNode):
         type_check.expect(
             sp_type.dtype.kind == 'f',
             dn_type.dtype.kind == 'f',
-            dn_type.ndim >= 2,
-            dn_type.ndim <= 3,
+            dn_type.ndim == 2,
             sp_type.ndim == dn_type.ndim - 1,
             self.sp_shape[sp_k_axis] == dn_type.shape[dn_k_axis],
         )
-        dn_ndim = type_check.eval(dn_type.ndim)
-        if dn_ndim == 3:
-            type_check.expect(
-                sp_type.shape[0] == self.sp_indices.shape[0],
-                dn_type.shape[0] == self.sp_indices.shape[0],
-            )
 
     def forward(self, inputs):
         self.retain_inputs((0, 1))
@@ -794,8 +770,8 @@ class CompMatMulGradSP(function_node.FunctionNode):
     def check_type_forward(self, in_types):
         type_check.expect(in_types.size() == 2)
         a_type, b_type = in_types
-        # a_type.shape: ((nb,) _m, _k) when transa is False
-        # b_type.shape: ((nb,) _k, _n) when transb is False
+        # a_type.shape: (_m, _k) when transa is False
+        # b_type.shape: (_k, _n) when transb is False
         a_m_axis, a_k_axis = -2, -1
         b_k_axis, b_n_axis = -2, -1
         sp_m_axis, sp_n_axis = -2, -1
@@ -808,19 +784,12 @@ class CompMatMulGradSP(function_node.FunctionNode):
         type_check.expect(
             a_type.dtype.kind == 'f',
             b_type.dtype.kind == 'f',
-            a_type.ndim >= 2,
-            a_type.ndim <= 3,
+            a_type.ndim == 2,
             a_type.ndim == b_type.ndim,
             a_type.shape[a_m_axis] == self.sp_shape[sp_m_axis],
             b_type.shape[b_n_axis] == self.sp_shape[sp_n_axis],
             a_type.shape[a_k_axis] == b_type.shape[b_k_axis],
         )
-        a_ndim = type_check.eval(a_type.ndim)
-        if a_ndim == 3:
-            type_check.expect(
-                a_type.shape[0] == self.sp_indices.shape[0],
-                b_type.shape[0] == self.sp_indices.shape[0],
-            )
 
     def forward(self, inputs):
         self.retain_inputs((0, 1))
