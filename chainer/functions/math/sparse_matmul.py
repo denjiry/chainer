@@ -650,7 +650,10 @@ class CompMatMul(function_node.FunctionNode):
                                     dtype=sp.dtype).apply((g_c, dn))[0]
             ret.append(g_sp)
         if 1 in indexes:
+            # performance problem: backward sparse matrix format is
+            # opposite format on forward
             g_dn = CompMatMul(self.sp_indices, self.sp_indptr, self.sp_shape,
+                              self.sp_format_,
                               not self.transa, self.transc, self.transb,
                               dtype=dn.dtype).apply((sp, g_c))[0]
             ret.append(g_dn)
