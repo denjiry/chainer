@@ -269,13 +269,13 @@ def coo_to_compressed(coo, format_):
     if format_ == 'crs':
         sorted_coo = _sort_coo(coo, coo.row)
         indices = sorted_coo.col
-        indptr = _compress(sorted_coo.row, coo.shape[0]+1)
+        indptr = _compress(sorted_coo.row, coo.shape[0])
     elif format_ == 'csc':
         sorted_coo = _sort_coo(coo, coo.col)
         indices = sorted_coo.row
-        indptr = _compress(sorted_coo.col, coo.shape[1]+1)
+        indptr = _compress(sorted_coo.col, coo.shape[1])
     else:
         raise ValueError('format_ must be either crs or csc.')
     data = sorted_coo.data.data
     return CompressedMatrix(data, indices, indptr, coo.shape,
-                            format_, requires_grad=coo.requires_grad)
+                            format_, requires_grad=coo.data.requires_grad)
