@@ -116,13 +116,30 @@ class TestGetOrder2(unittest.TestCase):
                          4,
                          numpy.array([0, 0, 2, 4, 5]))],
 }))
-class TestCooToCompressed(unittest.TestCase):
+class TestCompress(unittest.TestCase):
 
     def test__compress(self):
         compressed = utils._compress(self.ind_dim_assumed[0],
                                      self.ind_dim_assumed[1])
         assumed = self.ind_dim_assumed[2]
         assert numpy.array_equal(assumed, compressed), compressed
+
+
+@testing.parameterize(*testing.product({
+    'shape': [(2, 3), (3, 4)],
+    'format_': ['crs', 'csc'],
+    'dtype': [numpy.float16, numpy.float32, numpy.float64],
+}))
+class TestToComp(unittest.TestCase):
+
+    def test_to_comp(self):
+        x_shape = self.shape
+        x0 = _setup_tensor(.5, 1, x_shape, self.dtype, .75)
+        sp_x = utils.to_comp(x0, self.format_)
+        assert sp_x.data.ndim == 1
+        assert sp_x.data.shape == sp_x.indices.shape
+        x1 = sp_x.to_dense()
+        numpy.testing.assert_array_equal(x0, x1)
 
 
 testing.run_module(__name__, __file__)
