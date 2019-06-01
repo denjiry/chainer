@@ -234,6 +234,24 @@ class CompressedMatrix(object):
         self.shape = shape
         self.format_ = format_
 
+        def to_dense(self):
+            """Returns a dense matrix format of this sparse matrix."""
+            data = self.data.data
+            xp = backend.get_array_module(data)
+            x = xp.zeros(self.shape, dtype=data.dtype)
+            uncompressed = xp.zeros(len(data), dtype=xp.int)
+            for i in range(len(self.indptr) - 1):
+                uncompressed[self.indptr[i]: self.indptr[i+1]] = i
+            if self.format_ == 'crs':
+                row = uncompressed
+                col = self.indices
+            else:
+                col = uncompressed
+                row = self.indices
+
+            x[row, col] = data
+            return x
+
 
 def _seek_last(arr, dim):
     for i, v in enumerate(arr):
@@ -245,7 +263,6 @@ def _seek_last(arr, dim):
 
 def _compress(ind, n_ind):
     # look up row changing index
-    # TODO: require that row is sorted
     xp = backend.get_array_module(ind)
     indptr = xp.zeros((n_ind+1), dtype=xp.int)
     index = 0
@@ -257,7 +274,7 @@ def _compress(ind, n_ind):
 
 
 def _sort_coo(coo, key_ind):
-    xp = backend.get_array_module(coo)
+    xp = backend.get_array_module(key_ind)
     sort_ind = xp.argsort(key_ind)
     coo.data.data = coo.data.data[sort_ind]
     coo.row = coo.row[sort_ind]
@@ -265,7 +282,12 @@ def _sort_coo(coo, key_ind):
     return coo
 
 
-def coo_to_compressed(coo, format_):
+def to_comp(x, format_, ldnz=None, requires_grad=False):
+    if not isinstance(x, CooMatrix):
+        coo = to_coo(x, ldnz, requires_grad)
+    else:
+        coo = x
+
     if format_ == 'crs':
         sorted_coo = _sort_coo(coo, coo.row)
         indices = sorted_coo.col
@@ -276,6 +298,7 @@ def coo_to_compressed(coo, format_):
         indptr = _compress(sorted_coo.col, coo.shape[1])
     else:
         raise ValueError('format_ must be either crs or csc.')
+
     data = sorted_coo.data.data
     return CompressedMatrix(data, indices, indptr, coo.shape,
                             format_, requires_grad=coo.data.requires_grad)

@@ -24,6 +24,7 @@ from chainer.utils.sparse import to_coo  # NOQA
 from chainer.utils.sparse import CompressedMatrix  # NOQA
 from chainer.utils.sparse import _compress  # NOQA
 from chainer.utils.sparse import coo_to_compressed  # NOQA
+from chainer.utils.sparse import to_comp  # NOQA
 from chainer.utils.walker_alias import WalkerAlias  # NOQA
 
 # The following alias has been moved to chainer/__init__.py in order to break

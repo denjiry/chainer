@@ -505,70 +505,17 @@ def _comp_matmul_gpu(A_data, A_indices, A_indptr, A_shape, A_format_,
 
     # A_shape: (_m, _k)
     # B.shape: (_k, _n)
-    # A_data/row/col.shape: (ldnz,)
     _m, _k = A_shape
-    _n = B.shape[-1]
-    ldnz = A_data.shape[-1]
-    nb = 1
-    C = cuda.cupy.zeros((_m, _n), dtype=cupy_dtype)
-
-    # A chunk is the number of non-zero elements handled by a single GPU
-    # thread. If contiguous non-zero elemets are related to the same
-    # location of the output matrix and they are processed in the same
-    # thread, number of atomic-add operations can be reduced.
-    chunk = max(ldnz // _m, 1)
-    nthreads = (nb * ldnz + chunk - 1) // chunk * _n
-    _cupy_comp_matmul()(nb, _m, _n, _k, ldnz, chunk,
-                        A_data, A_indices, A_indptr, B, C,
-                        size=nthreads)
-
-    return C.astype(dtype, copy=False)
-
-
-def _cupy_comp_matmul():
-    return cuda.elementwise(
-        'int32 nb, int32 _m, int32 _n, int32 _k, int32 nnz, int32 chunk, \
-         raw A A_data, raw T A_indices, raw T A_indptr, \
-         raw B _B',
-        'raw C _C',
-        '''
-        int i_n = (i % _n);
-        int i0 = (i / _n) * chunk;
-        int i_C = -1;
-        C val_C = 0;
-        for (int i1 = 0; i1 < chunk; i1++) {
-            int i_A = i0 + i1;
-            int i_b = i_A / nnz;
-            if (i_b >= nb) {
-                continue;
-            }
-            int i_k = A_col[i_A];
-            if (i_k < 0) {
-                continue;
-            }
-            assert(i_k < _k);
-            int i_m = A_row[i_A];
-            if (i_m < 0) {
-                continue;
-            }
-            assert(i_m < _m);
-            int i_B = i_n + _n * (i_k + _k * i_b);
-            int i_C_now = i_n + _n * (i_m + _m * i_b);
-            A val_A = A_data[i_A];
-            B val_B = _B[i_B];
-            C val_C_now = static_cast<C>(val_A * val_B);
-            if (i_C >= 0 && i_C != i_C_now) {
-                atomicAdd(&_C[i_C], val_C);
-                val_C = 0;
-            }
-            i_C = i_C_now;
-            val_C += val_C_now;
-        }
-        if (i_C >= 0) {
-            atomicAdd(&_C[i_C], val_C);
-        }
-        ''',
-        'comp_matmul')
+    if A_format_ == 'crs':
+        sp_A = sparse.csr_matrix((A_data, A_indices, A_indptr),
+                                 shape=(_m, _k))
+    elif A_format_ == 'csc':
+        sp_A = sparse.csc_matrix((A_data, A_indices, A_indptr),
+                                 shape=(_m, _k))
+        # convert csc to crs
+        sp_A = sp_A.tocsr()
+    C = sp_A.dot(B).astype(dtype, copy=False)
+    return C
 
 
 class CompMatMul(function_node.FunctionNode):
@@ -671,75 +618,23 @@ def _comp_matmul_gradsp(a, b, c_indices, c_indptr, c_shape, c_format_,
 
 
 def _comp_matmul_gradsp_cpu(A, B, C_indices, C_indptr, C_format_, dtype):
-    # A.shape: (_m, _k)
-    # B.shape: (_k, _n)
-    # C_row/col.shape: (ldnz)
-    raise NotImplementedError
-    # _m, _k = A.shape[-2:]
-    # ldnz = C_row.shape[-1]
-    # if hasattr(numpy, 'matmul'):
-    #     C = numpy.matmul(A, B)
-    # else:
-    #     C = numpy.dot(A, B)
-    # C = C.astype(dtype, copy=False)
-    # C_data = numpy.zeros((ldnz), dtype=dtype)
-    # nnz = len(numpy.where(C_row >= 0)[0])
-    # C_data[:nnz] = C[C_row[:nnz], C_col[:nnz]]
-    # return C_data
+    C = numpy.dot(A, B)
+    C = C.astype(dtype, copy=False)
+    if C_format_ == 'crs':
+        C = C.tocsr()
+    elif C_format_ == 'csc':
+        C = C.tocsc()
+    return C.data
 
 
 def _comp_matmul_gradsp_gpu(A, B, C_indices, C_indptr, C_format_, dtype):
-    # A.shape: (_m, _k)
-    # B.shape: (_k, _n)
-    # C_row/col.shape: (ldnz)
-    raise NotImplementedError
-    # _m, _k = A.shape[-2:]
-    # _n = B.shape[-1]
-    # ldnz = C_row.shape[-1]
-    # nb = 1
-    # C_data = cuda.cupy.zeros((ldnz), dtype=dtype)
-
-    # nthreads = nb * ldnz
-    # _cupy_comp_matmul_gradsp()(nb, _m, _n, _k, ldnz, A, B, C_row, C_col,
-    #                            C_data, size=nthreads)
-
-    # return C_data
-
-
-def _cupy_comp_matmul_gradsp():
-    return cuda.elementwise(
-        'int32 nb, int32 _m, int32 _n, int32 _k, int32 nnz, \
-         raw A _A, raw B _B, \
-         raw T C_row, raw T C_col',
-        'raw C C_data',
-        '''
-        int i_nz = (i % nnz);
-        int i_b = (i / nnz);
-        if (i_b >= nb) {
-            continue;
-        }
-        int i_C = i;
-        int i_m = C_row[i_C];
-        if (i_m < 0) {
-            continue;
-        }
-        assert(i_m < _m);
-        int i_n = C_col[i_C];
-        if (i_n < 0) {
-            continue;
-        }
-        assert(i_n < _n);
-        C val_C = 0.0;
-        for (int i_k = 0; i_k < _k; i_k++) {
-            int i_A = i_k + _k * (i_m + _m * i_b);
-            int i_B = i_n + _n * (i_k + _k * i_b);
-            A val_A = _A[i_A];
-            B val_B = _B[i_B];
-            val_C += static_cast<C>(val_A * val_B);
-        }
-        C_data[i_C] = val_C;
-        ''',
-        'comp_matmul_gradsp')
+    C = cuda.cupy.dot(A, B)
+    C = C.astype(dtype, copy=False)
+    if C_format_ == 'crs':
+        C = C.tocsr()
+    elif C_format_ == 'csc':
+        C = C.tocsc()
+    return C.data
 
 
 class CompMatMulGradSP(function_node.FunctionNode):
